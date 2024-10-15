@@ -13,6 +13,8 @@ use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 use std::time::Instant;
 
+const DEFAULT_DELAY_MS: u64 = 100;
+
 /// DeathStarBench social graph initializer in Rust.
 #[derive(Parser)]
 #[clap(author, version, about)]
@@ -261,7 +263,7 @@ fn print_results(results: &[String]) {
 
     if error_count > 0 {
         println!("Total Errors: {}", error_count);
-        println!("Last Error Message: {}", last_error_message.trim());
+        // println!("Last Error Message: {}", last_error_message.trim());
     } else {
         println!("All operations succeeded.");
     }
@@ -444,7 +446,6 @@ async fn timeline(
     let zipf = Zipf::new(nodes as u64, theta).unwrap();
 
     let max_retries = 5;  // Maximum number of retry attempts
-    let mut backoff_delay = Duration::from_millis(100);  // Initial backoff delay (100ms)
 
     loop {
         if num_requests != -1 && idx >= num_requests as usize {
@@ -464,6 +465,8 @@ async fn timeline(
         let handle: JoinHandle<String> = tokio::spawn(async move {
             let _permit = permit;
             let mut retries = 0;
+            let mut backoff_delay = Duration::from_millis(DEFAULT_DELAY_MS);  // Initial backoff delay (100ms)
+
             loop {
                 let params = [
                     ("user_id", user_id.to_string()),
@@ -471,6 +474,7 @@ async fn timeline(
                     ("stop", stop.to_string()),
                 ];
                 let url = format!("{}/wrk2-api/user-timeline/read", addr);
+                
                 
                 // Send the GET request
                 let res = client
@@ -489,15 +493,9 @@ async fn timeline(
                         }
                     }
                     Err(e) if retries < max_retries => {
-                        // Check if the error is a connection reset or similar
-                        if e.is_connect() || e.is_timeout() {
-                            retries += 1;
-                            println!("Retrying request... attempt {}/{}", retries, max_retries);
-                            sleep(backoff_delay).await;
-                            backoff_delay *= 2; // Exponential backoff
-                        } else {
-                            return e.to_string();  // Other errors, do not retry
-                        }
+                        sleep(backoff_delay).await;
+                        backoff_delay *= 2; // Exponential backoff
+                        retries += 1;
                     }
                     Err(e) => {
                         // If we've reached max retries, return the error
