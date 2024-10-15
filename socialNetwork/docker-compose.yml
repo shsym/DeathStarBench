@@ -45,7 +45,7 @@ services:
     #    ports:
     #      - 10001:9090
     restart: always
-    depends_on:
+    # depends_on:
       # jaeger-agent:
       #   condition: service_started
     entrypoint: ComposePostService
@@ -219,7 +219,7 @@ services:
     #    ports:
     #      - 10007:9090
     restart: always
-    depends_on:
+    # depends_on:
       # jaeger-agent:
       #   condition: service_started
     entrypoint: TextService
@@ -233,7 +233,7 @@ services:
     #    ports:
     #      - 10008:9090
     restart: always
-    depends_on:
+    # depends_on:
       # jaeger-agent:
       #   condition: service_started
     entrypoint: UniqueIdService
@@ -246,7 +246,7 @@ services:
     hostname: user-mention-service
     #    ports:
     #      - 10009:9090
-    depends_on:
+    # depends_on:
       # jaeger-agent:
       #   condition: service_started
     restart: always
@@ -260,7 +260,7 @@ services:
     hostname: home-timeline-service
     #    ports:
     #      - 10010:9090
-    depends_on:
+    # depends_on:
       # jaeger-agent:
       #   condition: service_started
     restart: always
@@ -274,7 +274,7 @@ services:
     hostname: nginx-thrift
     ports:
       - 8080:8080
-    depends_on:
+    # depends_on:
       # jaeger-agent:
       #   condition: service_started
     restart: always
@@ -293,7 +293,7 @@ services:
     ports:
       - 8081:8080
     restart: always
-    depends_on:
+    # depends_on:
       # jaeger-agent:
       #   condition: service_started
     volumes:
