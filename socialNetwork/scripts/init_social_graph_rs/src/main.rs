@@ -294,12 +294,19 @@ async fn register(
                 .unwrap_or_else(|e| e.to_string())
         });
         handles.push(handle);
-        if handles.len() >= limit {
-            // Wait for all handles in parallel
-            let parallel_results = join_all(handles.drain(..)).await;
-            for res in parallel_results {
-                results.push(res.unwrap());
-            }
+        // if handles.len() >= limit {
+        //     // Wait for all handles in parallel
+        //     let parallel_results = join_all(handles.drain(..)).await;
+        //     for res in parallel_results {
+        //         results.push(res.unwrap());
+        //     }
+        //     if i % print_every == 0 && i != 0 {
+        //         println!("Registered {} users", i);
+        //     }
+        // }
+        for handle in handles.drain(..) {
+            let res = handle.await;
+            results.push(res.unwrap());
             if i % print_every == 0 && i != 0 {
                 println!("Registered {} users", i);
             }
