@@ -4,16 +4,39 @@ use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 use rand_distr::{Distribution, Zipf};
 use reqwest::Client;
-// use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
+use std::time::Instant;
+use serde_json::json;
+use rocket::{get, routes, State};
+use rocket::fairing::AdHoc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
-use std::time::Instant;
+// use log::{info, LevelFilter};
+use env_logger::{Builder, Target};
+use log::info;
+use std::env;
 
 const DEFAULT_DELAY_MS: u64 = 100;
+const NUM_BUCKETS: usize = 1000;
+const MAX_LATENCY: usize = 100_000; // in microseconds
+
+/// Function to initialize latency buckets
+pub fn initialize_buckets() -> Vec<AtomicUsize> {
+    (0..NUM_BUCKETS).map(|_| AtomicUsize::new(0)).collect()
+}
+
+/// Structure to hold performance metrics
+pub struct PerfMetrics {
+    latencies: Vec<AtomicUsize>,
+    num_requests: AtomicUsize,
+    tot_size_bytes: AtomicUsize,
+    start_time: Mutex<Instant>,
+    init_time: Mutex<Instant>,
+}
 
 /// DeathStarBench social graph initializer in Rust.
 #[derive(Parser)]
@@ -52,68 +75,116 @@ struct Args {
     /// Number of posts to compose per user (default: 20).
     #[clap(long, default_value = "20")]
     num_compose: usize,
+    /// Enable metric server (default: true).
+    #[clap(long, action = clap::ArgAction::Set, default_value_t = true)]
+    metric_server: bool,
+    /// Port to bind the metric server to (default: 8001).
+    #[clap(long, default_value = "8001")]
+    metric_port: u16,
 }
 
-#[tokio::main]
-async fn main() {
-    // Parse command line arguments
-    let args = Args::parse();
-
-    if args.timeline_only && args.compose_only {
-        eprintln!("Cannot specify both --timeline-only and --compose-only");
-        std::process::exit(1);
+fn main() {
+    // Initialize logger
+    if env::var("RUST_LOG").is_err() {
+        env::set_var("RUST_LOG", "info");
     }
 
-    let addr = format!("http://{}:{}", args.ip, args.port);
-    let limit = args.limit;
+    Builder::new()
+        .filter_level(log::LevelFilter::Info)
+        .target(Target::Stdout)
+        .init();
 
-    // Create an HTTP client
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .unwrap();
+    let body = async {
+        // Parse command line arguments
+        let args = Args::parse();
 
-    // Read nodes (needed for all modes)
-    let nodes = get_num_nodes(&format!(
-        "../../datasets/social-graph/{}/{}.nodes",
-        args.graph, args.graph
-    ));
+        if args.timeline_only && args.compose_only {
+            eprintln!("Cannot specify both --timeline-only and --compose-only");
+            std::process::exit(1);
+        }
 
-    if args.timeline_only {
-        // Timeline-only mode: perform user timeline reads
-        timeline(
-            &client,
-            &addr,
-            nodes,
-            limit,
-            args.theta,
-            args.num_requests,
-            args.print_every,
-        )
-        .await;
-    } else if args.compose_only {
-        // Compose-only mode: only add posts
-        compose(
-            &client,
-            &addr,
-            nodes,
-            limit,
-            args.num_compose, // Cast to usize
-            args.print_every,
-        )
-        .await;
-    } else {
-        // Read edges (needed only if not in compose-only or timeline-only mode)
-        let edges = get_edges(&format!(
-            "../../datasets/social-graph/{}/{}.edges",
+        let addr = format!("http://{}:{}", args.ip, args.port);
+        let limit = args.limit;
+
+        // Create an HTTP client
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap();
+
+        // Read nodes (needed for all modes)
+        let nodes = get_num_nodes(&format!(
+            "../../datasets/social-graph/{}/{}.nodes",
             args.graph, args.graph
         ));
-        println!("Nodes: {}, Edges: {}", nodes, edges.len());
 
-        // Run tasks
-        register(&client, &addr, nodes, limit, args.print_every).await;
-        follow(&client, &addr, &edges, limit, args.print_every).await;
-        if args.compose {
+        let stop_signal = Arc::new(AtomicBool::new(false));
+
+        if args.timeline_only {
+            // Initialize performance metrics
+            let perf_metrics = Arc::new(PerfMetrics {
+                latencies: initialize_buckets(),
+                num_requests: AtomicUsize::new(0),
+                tot_size_bytes: AtomicUsize::new(0),
+                start_time: Mutex::new(Instant::now()),
+                init_time: Mutex::new(Instant::now()),
+            });
+
+            // Spawn the timeline task
+            let stop_signal_clone = stop_signal.clone();
+            let perf_metrics_clone = perf_metrics.clone();
+            let client_clone = client.clone();
+            let addr_clone = addr.clone();
+            let timeline_handle = tokio::spawn(async move {
+                timeline(
+                    &client_clone,
+                    &addr_clone,
+                    nodes,
+                    limit,
+                    args.theta,
+                    args.num_requests,
+                    args.print_every,
+                    perf_metrics_clone,
+                    stop_signal_clone,
+                )
+                .await;
+            });
+
+            // Configure and start the Rocket server
+            if args.metric_server {
+                let address_config = rocket::Config {
+                    address: "0.0.0.0".parse().expect("Invalid IP address"),
+                    port: args.metric_port,
+                    ..rocket::Config::release_default()
+                };
+
+                let perf_metrics_clone = perf_metrics.clone();
+                let stop_signal_clone = stop_signal.clone();
+                let shutdown_handle = timeline_handle;
+
+                let rocket_instance = rocket::custom(address_config);
+                rocket_instance
+                    .manage(perf_metrics_clone)
+                    .mount("/", routes![metric])
+                    .attach(AdHoc::on_shutdown("Shutdown -- stopping timeline", move |_| {
+                        let stop_signal = stop_signal_clone.clone();
+                        let shutdown_handle = shutdown_handle;
+                        Box::pin(async move {
+                            println!("Shutting down...");
+                            stop_signal.store(true, Ordering::SeqCst);
+                            shutdown_handle.await.unwrap();
+                            println!("All Clear.");
+                        })
+                    }))
+                    .launch()
+                    .await
+                    .unwrap();
+            } else {
+                // Run without starting the metric server
+                timeline_handle.await.unwrap();
+            }
+        } else if args.compose_only {
+            // Compose-only mode: only add posts
             compose(
                 &client,
                 &addr,
@@ -123,7 +194,38 @@ async fn main() {
                 args.print_every,
             )
             .await;
+        } else {
+            // Read edges (needed only if not in compose-only or timeline-only mode)
+            let edges = get_edges(&format!(
+                "../../datasets/social-graph/{}/{}.edges",
+                args.graph, args.graph
+            ));
+            println!("Nodes: {}, Edges: {}", nodes, edges.len());
+
+            // Run tasks
+            register(&client, &addr, nodes, limit, args.print_every).await;
+            follow(&client, &addr, &edges, limit, args.print_every).await;
+            if args.compose {
+                compose(
+                    &client,
+                    &addr,
+                    nodes,
+                    limit,
+                    args.num_compose,
+                    args.print_every,
+                )
+                .await;
+            }
         }
+    };
+
+    #[allow(clippy::expect_used, clippy::diverging_sub_expression)]
+    {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("Failed building the Runtime")
+            .block_on(body);
     }
 }
 
@@ -278,6 +380,7 @@ async fn register(
     print_every: usize,
 ) {
     println!("Registering Users...");
+    let start_time = Instant::now();
     let sem = Arc::new(Semaphore::new(limit));
     let mut handles = Vec::new();
     let mut results = Vec::new();
@@ -294,21 +397,18 @@ async fn register(
                 .unwrap_or_else(|e| e.to_string())
         });
         handles.push(handle);
-        // if handles.len() >= limit {
-        //     // Wait for all handles in parallel
-        //     let parallel_results = join_all(handles.drain(..)).await;
-        //     for res in parallel_results {
-        //         results.push(res.unwrap());
-        //     }
-        //     if i % print_every == 0 && i != 0 {
-        //         println!("Registered {} users", i);
-        //     }
-        // }
         for handle in handles.drain(..) {
             let res = handle.await;
             results.push(res.unwrap());
             if i % print_every == 0 && i != 0 {
-                println!("Registered {} users", i);
+                let elapsed = start_time.elapsed().as_secs_f64();
+                let progress = (i as f64 / nodes as f64) * 100.0;
+                let est_total_time = elapsed / (i as f64 / nodes as f64);
+                let remaining_time = est_total_time - elapsed;
+                info!(
+                    "Registered {} users ({:.2}% complete). Elapsed: {:.2}s, Estimated Remaining: {:.2}s",
+                    i, progress, elapsed, remaining_time
+                );
             }
         }
     }
@@ -444,6 +544,8 @@ async fn timeline(
     theta: f64,
     num_requests: isize,
     print_every: usize,
+    perf_metrics: Arc<PerfMetrics>,
+    stop_signal: Arc<AtomicBool>,
 ) {
     println!("Performing user timeline reads...");
     let sem = Arc::new(Semaphore::new(limit));
@@ -456,14 +558,29 @@ async fn timeline(
     let max_retries = 5;  // Maximum number of retry attempts
 
     loop {
+        if stop_signal.load(Ordering::SeqCst) {
+            break;
+        }
+
         if num_requests != -1 && idx >= num_requests as usize {
             break;
         }
 
         let sem_clone = sem.clone();
-        let permit = sem_clone.acquire_owned().await.unwrap();
+        let permit = match sem_clone.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                // If semaphore is not available, check stop_signal
+                if stop_signal.load(Ordering::SeqCst) {
+                    break;
+                }
+                // Wait for a permit to become available
+                sem_clone.acquire_owned().await.unwrap()
+            }
+        };
         let client = client.clone();
         let addr = addr.to_string();
+        let perf_metrics_clone = perf_metrics.clone();
 
         // Sample user_id and other parameters
         let user_id = zipf.sample(&mut rng) as usize - 1; // Adjust to 0-based index
@@ -476,14 +593,14 @@ async fn timeline(
             let mut backoff_delay = Duration::from_millis(DEFAULT_DELAY_MS);  // Initial backoff delay (100ms)
 
             loop {
+                let start_time = Instant::now(); // Start time before sending the request
                 let params = [
                     ("user_id", user_id.to_string()),
                     ("start", start.to_string()),
                     ("stop", stop.to_string()),
                 ];
                 let url = format!("{}/wrk2-api/user-timeline/read", addr);
-                
-                
+
                 // Send the GET request
                 let res = client
                     .get(&url)
@@ -492,9 +609,16 @@ async fn timeline(
                     .send()
                     .await;
 
+                let elapsed_time = start_time.elapsed();
+
                 match res {
                     Ok(response) => {
                         if response.status().is_success() {
+                            // Record the latency
+                            let latency_us = elapsed_time.as_micros() as usize;
+                            let bucket_idx = ((latency_us * NUM_BUCKETS) / MAX_LATENCY).min(NUM_BUCKETS - 1);
+                            perf_metrics_clone.latencies[bucket_idx].fetch_add(1, Ordering::SeqCst);
+                            perf_metrics_clone.num_requests.fetch_add(1, Ordering::SeqCst);
                             return "Success".to_string();
                         } else {
                             return format!("Failed with status code: {}", response.status());
@@ -540,4 +664,45 @@ async fn timeline(
     // Print and clear remaining results
     print_results(&results);
     results.clear(); // Clear final batch of results
+}
+
+#[get("/metric")]
+async fn metric(perf_metrics: &State<Arc<PerfMetrics>>) -> String {
+    let latency_snapshot = perf_metrics.latencies.iter()
+        .map(|bucket| bucket.load(Ordering::SeqCst))
+        .collect::<Vec<usize>>();
+
+    let total_count: usize = latency_snapshot.iter().sum();
+    if total_count == 0 {
+        return json!({"error": "No data available"}).to_string();
+    }
+
+    // Calculate CDF
+    let mut cumulative_count = 0;
+    let mut cdf_data = Vec::new();
+    // CDF: x-axis: latency, y-axis: percentile
+    for (i, bucket) in latency_snapshot.iter().enumerate() {
+        cumulative_count += bucket;
+        let percentile = cumulative_count as f64 / total_count as f64;
+        let latency_value = (i as f64 / NUM_BUCKETS as f64) * MAX_LATENCY as f64;
+        cdf_data.push((latency_value, percentile));
+    }
+
+    // Compute throughput
+    let total_time = perf_metrics.start_time.lock().unwrap().elapsed().as_secs_f64();
+    let throughput = perf_metrics.num_requests.load(Ordering::SeqCst) as f64 / total_time;
+
+    // Time stamps
+    let init_time = perf_metrics.init_time.lock().unwrap();
+    let init_time_elapsed = init_time.elapsed().as_secs_f64();
+    let start_time = perf_metrics.start_time.lock().unwrap();
+    let start_time_elapsed = start_time.elapsed().as_secs_f64();
+
+    // Convert to JSON string
+    json!({
+        "cdf": cdf_data,
+        "throughput_rps": throughput,
+        "init_time_elapsed": init_time_elapsed,
+        "start_time_elapsed": start_time_elapsed,
+    }).to_string()
 }

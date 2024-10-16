@@ -10,3 +10,8 @@ clap = { version = "4.5", features = ["derive"] }
 rand = "0.8"
 rand_distr = "0.4"
 futures = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rocket = { version = "0.5", features = ["json"] }
+log = "0.4"
+env_logger = "0.11"
