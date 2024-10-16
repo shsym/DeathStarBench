@@ -108,6 +108,7 @@ async fn main() {
             "../../datasets/social-graph/{}/{}.edges",
             args.graph, args.graph
         ));
+        println!("Nodes: {}, Edges: {}", nodes, edges.len());
 
         // Run tasks
         register(&client, &addr, nodes, limit, args.print_every).await;
