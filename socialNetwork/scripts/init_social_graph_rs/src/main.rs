@@ -367,8 +367,6 @@ fn print_results(results: &[String]) {
     if error_count > 0 {
         println!("Total Errors: {}", error_count);
         // println!("Last Error Message: {}", last_error_message.trim());
-    } else {
-        println!("All operations succeeded.");
     }
 }
 
