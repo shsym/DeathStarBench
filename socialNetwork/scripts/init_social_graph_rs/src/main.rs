@@ -430,10 +430,13 @@ async fn follow(
     print_every: usize,
 ) {
     println!("Adding follows...");
+    let start_time = Instant::now();
     let sem = Arc::new(Semaphore::new(limit));
     let mut handles = Vec::new();
     let mut results = Vec::new();
     let mut idx = 0;
+    let total_follows = edges.len() * 2; // Each edge creates two follows
+
     for edge in edges {
         // Create an owned vector of user pairs
         let user_pairs = vec![
@@ -453,14 +456,22 @@ async fn follow(
             });
             handles.push(handle);
             idx += 1;
+
             if handles.len() >= limit {
                 // Wait for all handles in parallel
                 let parallel_results = join_all(handles.drain(..)).await;
                 for res in parallel_results {
                     results.push(res.unwrap());
                 }
-                if idx % print_every == 0 {
-                    println!("Processed {} follows", idx);
+                if idx % print_every == 0 && idx != 0 {
+                    let elapsed = start_time.elapsed().as_secs_f64();
+                    let progress = (idx as f64 / total_follows as f64) * 100.0;
+                    let est_total_time = elapsed / (idx as f64 / total_follows as f64);
+                    let remaining_time = est_total_time - elapsed;
+                    info!(
+                        "Processed {} follows ({:.2}% complete). Elapsed: {:.2}s, Estimated Remaining: {:.2}s",
+                        idx, progress, elapsed, remaining_time
+                    );
                 }
             }
         }
@@ -484,14 +495,27 @@ async fn compose(
     print_every: usize,
 ) {
     println!("Composing posts...");
+    let start_time = Instant::now();
     let sem = Arc::new(Semaphore::new(limit));
     let mut handles = Vec::new();
     let mut results = Vec::new();
     let mut idx = 0;
-    let mut rng = StdRng::seed_from_u64(1); // Initialize rng here
 
-    for user_id in 0..nodes {
+    // First, compute total number of compose requests
+    let mut rng = StdRng::seed_from_u64(1); // Initialize rng here
+    let mut total_compose = 0;
+    let mut num_requests_per_user = Vec::with_capacity(nodes);
+
+    for _ in 0..nodes {
         let num_requests = rng.gen_range(1..=2 * num_compose);
+        total_compose += num_requests;
+        num_requests_per_user.push(num_requests);
+    }
+
+    // Re-initialize rng for actual execution
+    let rng = StdRng::seed_from_u64(1);
+    for user_id in 0..nodes {
+        let num_requests = num_requests_per_user[user_id];
         for _ in 0..num_requests {
             let sem_clone = sem.clone();
             let permit = sem_clone.acquire_owned().await.unwrap();
@@ -517,10 +541,17 @@ async fn compose(
                 for res in parallel_results {
                     results.push(res.unwrap());
                 }
-                if idx % print_every == 0 {
+                if idx % print_every == 0 && idx != 0 {
+                    let elapsed = start_time.elapsed().as_secs_f64();
+                    let progress = (idx as f64 / total_compose as f64) * 100.0;
+                    let est_total_time = elapsed / (idx as f64 / total_compose as f64);
+                    let remaining_time = est_total_time - elapsed;
+                    info!(
+                        "Performed {} compose ({:.2}% complete). Elapsed: {:.2}s, Estimated Remaining: {:.2}s",
+                        idx, progress, elapsed, remaining_time
+                    );
                     print_results(&results);
                     results.clear(); // Clear results to free up memory
-                    println!("Performed {} compose", idx);
                 }
             }
         }
