@@ -10,8 +10,12 @@ cargo run --release -- --help
 ```bash
 cargo run --release -- --graph soc-twitter-follows-mun
 ```
+or, with compose (=preloading)
+```bash
+cargo run --release -- --graph soc-twitter-follows-mun --compose --num-requests=10 --print-every=1000
+```
 
-## Preload posts
+### Preload posts (separately)
 - Given number is the number of posts to preload per user (default is 10, which means every user will get 1~20 posts)
 ```bash
 cargo run --release -- --graph soc-twitter-follows-mun --compose-only --num-requests=10 --print-every=1000
