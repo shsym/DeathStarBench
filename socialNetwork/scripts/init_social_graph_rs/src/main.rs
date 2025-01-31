@@ -542,11 +542,12 @@ async fn compose(
                 if idx % print_every == 0 && idx != 0 {
                     let elapsed = start_time.elapsed().as_secs_f64();
                     let progress = (idx as f64 / total_compose as f64) * 100.0;
+                    let throughput = idx as f64 / elapsed;
                     let est_total_time = elapsed / (idx as f64 / total_compose as f64);
                     let remaining_time = est_total_time - elapsed;
                     info!(
-                        "Performed {} compose ({:.2}% complete). Elapsed: {:.2}s, Estimated Remaining: {:.2}s",
-                        idx, progress, elapsed, remaining_time
+                        "Performed {} compose ({:.2}% complete). Elapsed: {:.2}s, Throughput: {:.2} req/s, Estimated Remaining: {:.2}s",
+                        idx, progress, elapsed, throughput, remaining_time
                     );
                     print_results(&results);
                     results.clear(); // Clear results to free up memory
