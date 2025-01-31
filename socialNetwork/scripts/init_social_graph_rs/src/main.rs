@@ -678,7 +678,12 @@ async fn timeline(
             if idx % print_every == 0 {
                 print_results(&results);
                 results.clear(); // Clear results to free up memory
-                println!("Performed {} timeline reads", idx);
+                // Compute throughput
+                let total_time = perf_metrics.start_time.lock().unwrap().elapsed().as_secs_f64();
+                let throughput = perf_metrics.num_requests.load(Ordering::SeqCst) as f64 / total_time;
+                // let elapsed = perf_metrics.start_time.lock().unwrap().elapsed().as_secs_f64();
+                // let throughput = idx as f64 / elapsed;
+                println!("Performed {} timeline reads, Throughput: {:.2} req/s", idx, throughput);
             }
         }
     }
