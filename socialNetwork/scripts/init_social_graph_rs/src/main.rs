@@ -600,7 +600,7 @@ async fn timeline(
         // Sample request parameters
         let user_id = zipf.sample(&mut rng) as usize - 1; // Adjust to 0-based index
         let start_range = 0;
-        let stop_range = rng.gen_range(10..100);
+        let stop_range = rng.gen_range(5..15);  // 10 in average
 
         let task = tokio::spawn(async move {
             let _permit = permit;
