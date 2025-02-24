@@ -548,7 +548,7 @@ async fn compose(
 
             // Drain all completed tasks if in-flight tasks are at the limit for better batching
             while futures.len() >= limit {
-                while let Some(completed) = futures.next().now_or_never().flatten() {
+                if let Some(completed) = futures.next().await {
                     results.push(completed.unwrap());
                 }
             }
@@ -655,16 +655,17 @@ async fn timeline(
 
         // Drain all completed tasks if in-flight tasks are at the limit
         while futures.len() >= limit {
-            while let Some(completed) = futures.next().now_or_never().flatten() {
+            if let Some(completed) = futures.next().await {
                 results.push(completed.unwrap());
             }
-            if idx % print_every == 0 {
-                print_results(&results);
-                results.clear();
-                let total_time = perf_metrics.start_time.lock().unwrap().elapsed().as_secs_f64();
-                let throughput = perf_metrics.num_requests.load(Ordering::SeqCst) as f64 / total_time;
-                println!("Performed {} timeline reads, Throughput: {:.2} req/s", idx, throughput);
-            }
+        }
+
+        if idx % print_every == 0 {
+            print_results(&results);
+            results.clear();
+            let total_time = perf_metrics.start_time.lock().unwrap().elapsed().as_secs_f64();
+            let throughput = perf_metrics.num_requests.load(Ordering::SeqCst) as f64 / total_time;
+            println!("Performed {} timeline reads, Throughput: {:.2} req/s", idx, throughput);
         }
     }
     // Await remaining tasks
