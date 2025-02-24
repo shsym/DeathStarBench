@@ -22,7 +22,7 @@ use std::env;
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::future::FutureExt;
 
-const DEFAULT_DELAY_MS: u64 = 100;
+const DEFAULT_DELAY_MS: u64 = 10;
 const NUM_BUCKETS: usize = 1000;
 const MAX_LATENCY: usize = 100_000; // in microseconds
 
@@ -608,7 +608,7 @@ async fn timeline(
         // Sample request parameters
         let user_id = zipf.sample(&mut rng) as usize - 1; // Adjust to 0-based index
         let start_range = 0;
-        let stop_range = rng.gen_range(5..15);  // 10 in average
+        let stop_range = rng.gen_range(1..10);  // 10 in average
 
         let task = tokio::spawn(async move {
             let _permit = permit;
@@ -642,7 +642,7 @@ async fn timeline(
                     }
                     Err(e) if retries < max_retries => {
                         sleep(backoff_delay).await;
-                        backoff_delay *= 2; // Exponential backoff
+                        // backoff_delay *= 2; // Exponential backoff
                         retries += 1;
                     }
                     Err(e) => {
