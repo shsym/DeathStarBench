@@ -547,7 +547,7 @@ async fn compose(
             idx += 1;
 
             // Drain all completed tasks if in-flight tasks are at the limit for better batching
-            if futures.len() >= limit {
+            while futures.len() >= limit {
                 while let Some(completed) = futures.next().now_or_never().flatten() {
                     results.push(completed.unwrap());
                 }
@@ -654,7 +654,7 @@ async fn timeline(
         idx += 1;
 
         // Drain all completed tasks if in-flight tasks are at the limit
-        if futures.len() >= limit {
+        while futures.len() >= limit {
             while let Some(completed) = futures.next().now_or_never().flatten() {
                 results.push(completed.unwrap());
             }
