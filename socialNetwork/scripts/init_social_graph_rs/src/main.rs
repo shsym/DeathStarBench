@@ -497,73 +497,63 @@ async fn compose(
     println!("Composing posts...");
     let start_time = Instant::now();
     let sem = Arc::new(Semaphore::new(limit));
-    let mut handles = Vec::new();
     let mut results = Vec::new();
     let mut idx = 0;
 
     // First, compute total number of compose requests
-    let mut rng = StdRng::seed_from_u64(1); // Initialize rng here
+    let mut rng = StdRng::seed_from_u64(1); // initialize rng for generating counts
     let mut total_compose = 0;
     let mut num_requests_per_user = Vec::with_capacity(nodes);
-
     for _ in 0..nodes {
         let num_requests = rng.gen_range(1..=2 * num_compose);
         total_compose += num_requests;
         num_requests_per_user.push(num_requests);
     }
 
+    let mut futures = futures::stream::FuturesUnordered::new();
     // Re-initialize rng for actual execution
-    let rng = StdRng::seed_from_u64(1);
+    let base_rng = StdRng::seed_from_u64(1);
+
     for user_id in 0..nodes {
         let num_requests = num_requests_per_user[user_id];
         for _ in 0..num_requests {
             let sem_clone = sem.clone();
-            let permit = sem_clone.acquire_owned().await.unwrap();
             let client = client.clone();
             let addr = addr.to_string();
             let num_users = nodes;
-
-            // Clone rng for the async task
-            let mut rng_task = rng.clone();
-
-            let handle: JoinHandle<String> = tokio::spawn(async move {
-                let _permit = permit;
+            let mut rng_task = base_rng.clone();
+            futures.push(tokio::spawn(async move {
+                let _permit = sem_clone.acquire_owned().await.unwrap();
                 upload_compose(&client, &addr, user_id, num_users, &mut rng_task)
                     .await
                     .unwrap_or_else(|e| e.to_string())
-            });
-            handles.push(handle);
+            }));
             idx += 1;
 
-            if handles.len() >= limit {
-                // Await all handles in parallel
-                let parallel_results = join_all(handles.drain(..)).await;
-                for res in parallel_results {
-                    results.push(res.unwrap());
+            // Drain all completed tasks if in-flight tasks are at the limit for better batching
+            if futures.len() >= limit {
+                while let Some(completed) = futures.next().now_or_never().flatten() {
+                    results.push(completed.unwrap());
                 }
-                if idx % print_every == 0 && idx != 0 {
-                    let elapsed = start_time.elapsed().as_secs_f64();
-                    let progress = (idx as f64 / total_compose as f64) * 100.0;
-                    let throughput = idx as f64 / elapsed;
-                    let est_total_time = elapsed / (idx as f64 / total_compose as f64);
-                    let remaining_time = est_total_time - elapsed;
-                    info!(
-                        "Performed {} compose ({:.2}% complete). Elapsed: {:.2}s, Throughput: {:.2} req/s, Estimated Remaining: {:.2}s",
-                        idx, progress, elapsed, throughput, remaining_time
-                    );
-                    print_results(&results);
-                    results.clear(); // Clear results to free up memory
-                }
+            }
+
+            if idx % print_every == 0 && idx != 0 {
+                print_results(&results);
+
+                let elapsed = start_time.elapsed().as_secs_f64();
+                let progress = (idx as f64 / total_compose as f64) * 100.0;
+                let throughput = idx as f64 / elapsed;
+                println!(
+                    "Performed {} compose ({:.2}% complete). Elapsed: {:.2}s, Throughput: {:.2} req/s",
+                    idx, progress, elapsed, throughput
+                );
             }
         }
     }
 
-    // Await any remaining handles
-    if !handles.is_empty() {
-        let parallel_results = join_all(handles.drain(..)).await;
-        for res in parallel_results {
-            results.push(res.unwrap());
-        }
+    // Await any remaining tasks
+    while let Some(res) = futures.next().await {
+        results.push(res.unwrap());
     }
     print_results(&results);
 }
