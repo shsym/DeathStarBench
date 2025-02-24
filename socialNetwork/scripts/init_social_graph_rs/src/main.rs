@@ -523,10 +523,26 @@ async fn compose(
             let num_users = nodes;
             let mut rng_task = base_rng.clone();
             futures.push(tokio::spawn(async move {
-                let _permit = sem_clone.acquire_owned().await.unwrap();
-                upload_compose(&client, &addr, user_id, num_users, &mut rng_task)
-                    .await
-                    .unwrap_or_else(|e| e.to_string())
+                let mut backoff_delay = Duration::from_millis(DEFAULT_DELAY_MS);
+                let max_retries = 7;
+                let mut num_retries = 0;
+                loop{
+                    let sem_clone = sem_clone.clone();
+                    let _permit = sem_clone.acquire_owned().await.unwrap();
+                    let res = upload_compose(&client, &addr, user_id, num_users, &mut rng_task)
+                        .await
+                        .unwrap_or_else(|e| e.to_string());
+                    if !res.is_empty() && res.starts_with("Success") {
+                        return res;
+                    } else if num_retries < max_retries {
+                        sleep(backoff_delay).await;
+                        backoff_delay *= 2;
+                        num_retries += 1;
+                        continue;
+                    } else {
+                        return res;
+                    }
+                }
             }));
             idx += 1;
 
