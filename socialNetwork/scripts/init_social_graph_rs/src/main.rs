@@ -559,9 +559,11 @@ async fn compose(
                 let elapsed = start_time.elapsed().as_secs_f64();
                 let progress = (idx as f64 / total_compose as f64) * 100.0;
                 let throughput = idx as f64 / elapsed;
+                let est_total_time = elapsed / (idx as f64 / total_compose as f64);
+                let remaining_time = est_total_time - elapsed;
                 println!(
-                    "Performed {} compose ({:.2}% complete). Elapsed: {:.2}s, Throughput: {:.2} req/s",
-                    idx, progress, elapsed, throughput
+                    "Performed {} compose ({:.2}% complete). Elapsed: {:.2}s, Throughput: {:.2} req/s, Estimated Remaining: {:.2}s",
+                    idx, progress, elapsed, throughput, remaining_time
                 );
             }
         }
@@ -655,8 +657,13 @@ async fn timeline(
 
         // Drain all completed tasks if in-flight tasks are at the limit
         while futures.len() >= limit {
+            // Wait for at least one future to complete
             if let Some(completed) = futures.next().await {
                 results.push(completed.unwrap());
+                // Then drain any futures which are immediately ready
+                while let Some(ready) = futures.next().now_or_never().flatten() {
+                    results.push(ready.unwrap());
+                }
             }
         }
 
