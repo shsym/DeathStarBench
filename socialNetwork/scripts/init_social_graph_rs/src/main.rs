@@ -19,6 +19,8 @@ use tokio::time::{sleep, Duration};
 use env_logger::{Builder, Target};
 use log::info;
 use std::env;
+use futures::stream::{FuturesUnordered, StreamExt};
+use futures::future::FutureExt;
 
 const DEFAULT_DELAY_MS: u64 = 100;
 const NUM_BUCKETS: usize = 1000;
@@ -579,80 +581,56 @@ async fn timeline(
 ) {
     println!("Performing user timeline reads...");
     let sem = Arc::new(Semaphore::new(limit));
-    let mut handles = Vec::new();
     let mut results = Vec::new();
+    let mut futures = FuturesUnordered::new();
     let mut idx: usize = 0;
-    let mut rng = StdRng::seed_from_u64(1); // Initialize rng here
+    let mut rng = StdRng::seed_from_u64(1);
     let zipf = Zipf::new(nodes as u64, theta).unwrap();
-
     let max_retries = 5;  // Maximum number of retry attempts
 
-    loop {
-        if stop_signal.load(Ordering::SeqCst) {
-            break;
-        }
-
-        if num_requests != -1 && idx >= num_requests as usize {
-            break;
-        }
-
-        let sem_clone = sem.clone();
-        let permit = match sem_clone.clone().try_acquire_owned() {
-            Ok(p) => p,
-            Err(_) => {
-                // If semaphore is not available, check stop_signal
-                if stop_signal.load(Ordering::SeqCst) {
-                    break;
-                }
-                // Wait for a permit to become available
-                sem_clone.acquire_owned().await.unwrap()
-            }
-        };
-        let client = client.clone();
-        let addr = addr.to_string();
+    while !stop_signal.load(Ordering::SeqCst)
+        && (num_requests == -1 || idx < num_requests as usize)
+    {
+        // Wait for a permit (limits concurrent spawning)
+        let permit = sem.clone().acquire_owned().await.unwrap();
+        let client_clone = client.clone();
+        let addr_clone = addr.to_string();
         let perf_metrics_clone = perf_metrics.clone();
 
-        // Sample user_id and other parameters
+        // Sample request parameters
         let user_id = zipf.sample(&mut rng) as usize - 1; // Adjust to 0-based index
-        let start = rng.gen_range(0..100);
-        let stop = start + 10;
+        let start_range = 0;
+        let stop_range = rng.gen_range(10..100);
 
-        let handle: JoinHandle<String> = tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let _permit = permit;
             let mut retries = 0;
-            let mut backoff_delay = Duration::from_millis(DEFAULT_DELAY_MS);  // Initial backoff delay (100ms)
-
+            let mut backoff_delay = Duration::from_millis(DEFAULT_DELAY_MS);
             loop {
-                let start_time = Instant::now(); // Start time before sending the request
+                let start_time = Instant::now();
                 let params = [
                     ("user_id", user_id.to_string()),
-                    ("start", start.to_string()),
-                    ("stop", stop.to_string()),
+                    ("start", start_range.to_string()),
+                    ("stop", stop_range.to_string()),
                 ];
-                let url = format!("{}/wrk2-api/user-timeline/read", addr);
-
-                // Send the GET request
-                let res = client
+                let url = format!("{}/wrk2-api/user-timeline/read", addr_clone);
+                let res = client_clone
                     .get(&url)
                     .query(&params)
                     .header("Content-Type", "application/x-www-form-urlencoded")
                     .send()
                     .await;
-
                 let elapsed_time = start_time.elapsed();
-
                 match res {
+                    Ok(response) if response.status().is_success() => {
+                        let latency_us = elapsed_time.as_micros() as usize;
+                        let bucket_idx = ((latency_us * NUM_BUCKETS) / MAX_LATENCY).min(NUM_BUCKETS - 1);
+                        perf_metrics_clone.latencies[bucket_idx].fetch_add(1, Ordering::SeqCst);
+                        perf_metrics_clone.num_requests.fetch_add(1, Ordering::SeqCst);
+                        return "Success".to_string();
+                    }
                     Ok(response) => {
-                        if response.status().is_success() {
-                            // Record the latency
-                            let latency_us = elapsed_time.as_micros() as usize;
-                            let bucket_idx = ((latency_us * NUM_BUCKETS) / MAX_LATENCY).min(NUM_BUCKETS - 1);
-                            perf_metrics_clone.latencies[bucket_idx].fetch_add(1, Ordering::SeqCst);
-                            perf_metrics_clone.num_requests.fetch_add(1, Ordering::SeqCst);
-                            return "Success".to_string();
-                        } else {
-                            return format!("Failed with status code: {}", response.status());
-                        }
+                        return format!("Failed with status code: {}", response.status());
                     }
                     Err(e) if retries < max_retries => {
                         sleep(backoff_delay).await;
@@ -660,45 +638,34 @@ async fn timeline(
                         retries += 1;
                     }
                     Err(e) => {
-                        // If we've reached max retries, return the error
                         return format!("Error after {} retries: {}", max_retries, e);
                     }
                 }
             }
         });
-        handles.push(handle);
+
+        futures.push(task);
         idx += 1;
 
-        if handles.len() >= limit {
-            // Await all handles in parallel
-            let parallel_results = join_all(handles.drain(..)).await;
-            for res in parallel_results {
-                results.push(res.unwrap());
+        // Drain all completed tasks if in-flight tasks are at the limit
+        if futures.len() >= limit {
+            while let Some(completed) = futures.next().now_or_never().flatten() {
+                results.push(completed.unwrap());
             }
             if idx % print_every == 0 {
                 print_results(&results);
-                results.clear(); // Clear results to free up memory
-                // Compute throughput
+                results.clear();
                 let total_time = perf_metrics.start_time.lock().unwrap().elapsed().as_secs_f64();
                 let throughput = perf_metrics.num_requests.load(Ordering::SeqCst) as f64 / total_time;
-                // let elapsed = perf_metrics.start_time.lock().unwrap().elapsed().as_secs_f64();
-                // let throughput = idx as f64 / elapsed;
                 println!("Performed {} timeline reads, Throughput: {:.2} req/s", idx, throughput);
             }
         }
     }
-
-    // Await any remaining handles
-    if !handles.is_empty() {
-        let parallel_results = join_all(handles.drain(..)).await;
-        for res in parallel_results {
-            results.push(res.unwrap());
-        }
+    // Await remaining tasks
+    while let Some(completed) = futures.next().await {
+        results.push(completed.unwrap());
     }
-
-    // Print and clear remaining results
     print_results(&results);
-    results.clear(); // Clear final batch of results
 }
 
 #[get("/metric")]
