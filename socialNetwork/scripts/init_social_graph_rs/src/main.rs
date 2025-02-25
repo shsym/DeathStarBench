@@ -62,8 +62,8 @@ struct Args {
     /// Run in timeline-only mode, performing user timeline reads.
     #[clap(long, action)]
     timeline_only: bool,
-    /// Theta parameter for Zipfian distribution (default: 0.99).
-    #[clap(long, default_value = "0.99")]
+    /// Theta parameter for Zipfian distribution.
+    #[clap(long, default_value = "1.0")]
     theta: f64,
     /// Total number of simultaneous connections.
     #[clap(long, default_value = "200")]
@@ -608,7 +608,7 @@ async fn timeline(
         // Sample request parameters
         let user_id = zipf.sample(&mut rng) as usize - 1; // Adjust to 0-based index
         let start_range = 0;
-        let stop_range = rng.gen_range(1..10);  // 10 in average
+        let stop_range = rng.gen_range(1..5);
 
         let task = tokio::spawn(async move {
             let _permit = permit;
