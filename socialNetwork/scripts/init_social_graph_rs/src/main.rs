@@ -83,6 +83,11 @@ struct Args {
     /// Port to bind the metric server to (default: 8001).
     #[clap(long, default_value = "8001")]
     metric_port: u16,
+    /// Range of timeline reads to perform (default: 10).
+    #[clap(long, default_value = "3")]
+    timeline_start: usize,
+    #[clap(long, default_value = "10")]
+    timeline_stop: usize,
 }
 
 fn main() {
@@ -148,6 +153,8 @@ fn main() {
                     args.print_every,
                     perf_metrics_clone,
                     stop_signal_clone,
+                    args.timeline_start,
+                    args.timeline_stop,
                 )
                 .await;
             });
@@ -586,6 +593,8 @@ async fn timeline(
     print_every: usize,
     perf_metrics: Arc<PerfMetrics>,
     stop_signal: Arc<AtomicBool>,
+    timeline_start: usize,
+    timeline_stop: usize,
 ) {
     println!("Performing user timeline reads...");
     let sem = Arc::new(Semaphore::new(limit));
@@ -608,7 +617,7 @@ async fn timeline(
         // Sample request parameters
         let user_id = zipf.sample(&mut rng) as usize - 1; // Adjust to 0-based index
         let start_range = 0;
-        let stop_range = rng.gen_range(1..5);
+        let stop_range = rng.gen_range(timeline_start..=timeline_stop);
 
         let task = tokio::spawn(async move {
             let _permit = permit;
