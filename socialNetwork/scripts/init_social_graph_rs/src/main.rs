@@ -22,7 +22,7 @@ use std::env;
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::future::FutureExt;
 
-const DEFAULT_DELAY_MS: u64 = 10;
+const DEFAULT_DELAY_MS: u64 = 100;
 const NUM_BUCKETS: usize = 1000;
 const MAX_LATENCY: usize = 100_000; // in microseconds
 
@@ -674,14 +674,40 @@ async fn timeline(
                     results.push(ready.unwrap());
                 }
             }
-        }
-
-        if idx % print_every == 0 {
-            print_results(&results);
-            results.clear();
-            let total_time = perf_metrics.start_time.lock().unwrap().elapsed().as_secs_f64();
-            let throughput = perf_metrics.num_requests.load(Ordering::SeqCst) as f64 / total_time;
-            println!("Performed {} timeline reads, Throughput: {:.2} req/s", idx, throughput);
+            if idx % print_every == 0 {
+                print_results(&results);
+                results.clear();
+                let total_time = perf_metrics.start_time.lock().unwrap().elapsed().as_secs_f64();
+                let throughput = perf_metrics.num_requests.load(Ordering::SeqCst) as f64 / total_time;
+                
+                // Calculate average latency
+                let total_requests = perf_metrics.num_requests.load(Ordering::SeqCst);
+                if total_requests > 0 {
+                    let bucket_size = MAX_LATENCY as f64 / NUM_BUCKETS as f64;
+                    let mut sum_latency = 0.0;
+                    let mut count = 0;
+                    
+                    for (i, bucket) in perf_metrics.latencies.iter().enumerate() {
+                        let bucket_count = bucket.load(Ordering::SeqCst);
+                        if bucket_count > 0 {
+                            // Middle point of this bucket's latency range
+                            let bucket_latency = (i as f64 + 0.5) * bucket_size;
+                            sum_latency += bucket_latency * bucket_count as f64;
+                            count += bucket_count;
+                        }
+                    }
+                    
+                    let avg_latency_us = if count > 0 { sum_latency / count as f64 } else { 0.0 };
+                    let avg_latency_ms = avg_latency_us / 1000.0;
+                    
+                    println!(
+                        "Performed {} timeline reads, Throughput: {:.2} req/s, Avg Latency: {:.4} ms",
+                        idx, throughput, avg_latency_ms
+                    );
+                } else {
+                    println!("Performed {} timeline reads, Throughput: {:.2} req/s", idx, throughput);
+                }
+            }
         }
     }
     // Await remaining tasks
