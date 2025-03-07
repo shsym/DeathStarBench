@@ -77,6 +77,9 @@ struct Args {
     /// Number of posts to compose per user (default: 20).
     #[clap(long, default_value = "20")]
     num_compose: usize,
+    /// Text length for post composition (default: 256).
+    #[clap(long, default_value = "256")]
+    text_length: usize,
     /// Enable metric server (default: true).
     #[clap(long, action = clap::ArgAction::Set, default_value_t = true)]
     metric_server: bool,
@@ -201,6 +204,7 @@ fn main() {
                 limit,
                 args.num_compose,
                 args.print_every,
+                args.text_length,
             )
             .await;
         } else {
@@ -222,6 +226,7 @@ fn main() {
                     limit,
                     args.num_compose,
                     args.print_every,
+                    args.text_length,
                 )
                 .await;
             }
@@ -301,9 +306,10 @@ async fn upload_compose(
     addr: &str,
     user_id: usize,
     num_users: usize,
+    text_length: usize,
     rng: &mut StdRng,
 ) -> Result<String, reqwest::Error> {
-    let mut text = (0..256)
+    let mut text = (0..text_length)
         .map(|_| {
             let idx = rng.gen_range(0..(26 + 26 + 10));
             let c = if idx < 26 {
@@ -500,6 +506,7 @@ async fn compose(
     limit: usize,
     num_compose: usize,
     print_every: usize,
+    text_length: usize,
 ) {
     println!("Composing posts...");
     let start_time = Instant::now();
@@ -529,6 +536,7 @@ async fn compose(
             let addr = addr.to_string();
             let num_users = nodes;
             let mut rng_task = base_rng.clone();
+            let text_length_clone = text_length;
             futures.push(tokio::spawn(async move {
                 let mut backoff_delay = Duration::from_millis(DEFAULT_DELAY_MS);
                 let max_retries = 7;
@@ -536,7 +544,7 @@ async fn compose(
                 loop{
                     let sem_clone = sem_clone.clone();
                     let _permit = sem_clone.acquire_owned().await.unwrap();
-                    let res = upload_compose(&client, &addr, user_id, num_users, &mut rng_task)
+                    let res = upload_compose(&client, &addr, user_id, num_users, text_length_clone, &mut rng_task)
                         .await
                         .unwrap_or_else(|e| e.to_string());
                     if !res.is_empty() && res.starts_with("Success") {
